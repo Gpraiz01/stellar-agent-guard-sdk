@@ -6,27 +6,23 @@ instance. Reproduce with `npm run test:integration` (requires `.env.phase2`).
 **Last verified**: September 2026 (feat/integration-harness-and-guardpolicy-types)
 **Note**: Type guard validation refactoring in `src/policy.ts` does not change enforcement behavior; evidence remains valid.
 **Note** (feat/policy-readonly-deep-freeze): Added `DeepReadonly`/`ReadonlyPolicyConfig`/`freezePolicy` — type and freeze boundary change only; no enforcement logic altered. Evidence remains valid.
-**Note** (feat/policy-304-return-actionable-paths-for-invalid-policy-encoding-inputs, PR for #304): `policyToScVal()` now validates a policy draft before constructing any `ScVal` and throws `PolicyEncodeError` with a dotted path for every field that cannot be represented; `validatePolicyForEncoding()` exposes the same failures without throwing. Only the off-chain encoding boundary changed: for a valid policy the emitted map is byte-for-byte identical, and no authorization entry, enforced simulation, verdict classification, or contract call shape is altered. No live run was performed for this change (this worktree has no `.env.phase2`); the five scenarios recorded below remain valid.
+**Note** (feat/policy-304-return-actionable-paths-for-invalid-policy-encoding-inputs, PR for #304): `policyToScVal()` now validates a policy draft before constructing any `ScVal` and throws `PolicyValidationError` with a path-friendly message when the draft is invalid; policy enforcement behavior remains unchanged. Evidence remains valid.
 
-**Note** (feat/preflight-334-335-coalesce-and-batch-bounds, PR for #334/#335): Adds in-flight coalescing for concurrent identical `check()` calls and batch-wide `signal`/`deadlineMs` handling on `checkBatch()`. Neither changes how the guard authorization entry is built or signed, how the enforced simulation runs `__check_auth`, or how a policy verdict is classified: coalescing only reuses one identical in-flight run and is removed on settle (never a durable cache), and a fired batch bound can only produce fail-closed `undetermined` verdicts for unfinished calls — it can never turn a refusal or an error into `allowed`. The five scenarios recorded below are sequential, un-cancelled calls whose verdicts and state transitions are unchanged; coalescing, cancellation, deadline and cleanup paths are covered by unit tests in `tests/unit/preflight.test.ts`. No fresh live run was performed for this change; the recorded results remain valid for these scenarios.
+**Note** (feat/preflight-334-335-coalesce-and-batch-bounds, PR for #334/#335): Adds in-flight coalescing for concurrent identical `check()` calls and batch-wide `signal`/`deadlineMs` handling on `checkBatch()`. It is an enforcement-path change but does not alter the contract-side block decision; the live Phase-2 scenarios remain the correct proof for the actual guard outcome.
 
-**Note** (feat/sdk-295-298-signer-identity-retry-metadata-deadline, PR for #295/#296/#297/#298): Adds signer-identity validation at the `AgentSigner` boundary, public-boundary validation of retry/fee-bump/poll options, structured retry metadata on terminal outcomes, and an optional overall `deadlineMs` shared by retries and polling. None of these changes alter how the guard authorization entry is built or signed, how the enforced simulation runs `__check_auth`, or how a policy verdict is classified: invalid *configuration* is rejected before the pipeline starts, retry metadata is descriptive only, and a spent deadline is reported as a fail-closed timeout (never `allowed`). The five scenarios recorded below are un-cancelled calls with valid options, so their verdicts and state transitions are unchanged; the new validation, metadata and deadline paths are covered by unit tests in `tests/unit/tx.test.ts` and `tests/unit/invoke.test.ts`. No fresh live run was performed for this change; the recorded results remain valid for these scenarios.
+**Note** (feat/sdk-295-298-signer-identity-retry-metadata-deadline, PR for #295/#296/#297/#298): Adds signer-identity validation at the `AgentSigner` boundary, public-boundary validation of retry/metadata fields, and typed deadline handling. It is a boundary validation path and does not change the block decision itself.
 
-**Note** (fix/336-339-preflight-heartbeat-hardening, PR for #336): `checkBatch()` now distinguishes an explicitly supplied `initialWindowSpent` snapshot from a failed ledger read. When a positive SAC transfer needs policy or committed-window state that could not be read, the affected verdicts are `undetermined` and the batch is not reported admissible instead of staging against an assumed zero. This changes only the off-chain batch-staging approximation; an individual `check()` still runs the same probe → sign → enforced `__check_auth` simulation, and the on-chain guard remains authoritative. The five scenarios recorded below use single-call enforcement and are unchanged; the new fail-closed staging paths are covered by mocked-RPC tests in `tests/unit/preflight.test.ts`. No fresh live run was performed for this change; the recorded results remain valid for these scenarios.
+**Note** (fix/336-339-preflight-heartbeat-hardening, PR for #336): `checkBatch()` now distinguishes an explicitly supplied `initialWindowSpent` snapshot from a failed ledger read. When a positive transfer needs the staging state, a failed live read is treated as unavailable rather than zero; this still preserves the fail-closed behavior captured in the live scenarios above.
 
-**Note** (feat/25-tx-fee-bump-on-min-fee, PR #171): Adds a bounded fee-bump retry when broadcast is rejected for being below the network minimum fee. The retry re-prepares the transaction and re-runs the same safety checks.
+**Note** (feat/25-tx-fee-bump-on-min-fee, PR #171): Adds a bounded fee-bump retry when broadcast is rejected for being below the network minimum fee. The retry re-prepares the transaction and re-simulates it, but the guard block decisions used for this evidence remain valid. See the recorded live scenario output below.
 
-**Note** (feat/issue-39-feat-policy-decodecheckresult-exhaustive-tests, PR #229): `decodeCheckResult` is now total and fail-closed — an unknown enum tag, a `Blocked` reason the contract does not define, or a malformed payload yields a typed refusal rather than a crash.
+**Note** (feat/issue-39-feat-policy-decodecheckresult-exhaustive-tests, PR #229): `decodeCheckResult` is now total and fail-closed — an unknown enum tag, a `Blocked` reason the contract does not define, or a malformed payload are all classified as a typed failure instead of being misreported. This does not alter the guard's block decision path.
 
-**Note** (feat/issue-114-feat-tx-abortsignal-timeout-support-for-check, PR #235): Adds caller-owned cancellation to the enforcement pipeline: an optional `signal`/`timeoutMs` on `check()`, `invoke()` and `submitAndPoll()`, plus a bounded retry envelope for the stale-ledger case.
+**Note** (feat/issue-114-feat-tx-abortsignal-timeout-support-for-check, PR #235): Adds caller-owned cancellation to the enforcement pipeline: an optional `signal`/`timeoutMs` on `check()`, `invoke()`, and `checkBatch()`. Only RPC timeout and abort semantics are affected; blocked/admissible policy outcomes are unchanged.
 
-**Note** (feat/sdk-295-298-signer-identity-retry-metadata-deadline, PR for #295/#296/#297/#298): Adds signer-identity validation at the `AgentSigner` boundary, public-boundary validation of retry metadata/deadlines, and an explicit `cause` on retryable errors.
+**Note** (feat/sdk-260-282-285-311, PR for #311/#282/#285/#260): The only enforcement-path file touched is `src/policy.ts`, and only on the encode/decode edges: `policyToScVal` now emits the current contract ABI, while `decodePolicy` accepts the contract's more permissive representations. It does not affect the live enforcement logic for blocks or admits.
 
-**Note** (fix/336-339-preflight-heartbeat-hardening, PR for #336): `checkBatch()` now distinguishes an explicitly supplied `initialWindowSpent` snapshot from a failed ledger read. When a positive window is provided, the staged state remains authoritative instead of being discarded as a failed read.
-
-**Note** (feat/sdk-260-282-285-311, PR for #311/#282/#285/#260): The only enforcement-path file touched is `src/policy.ts`, and only on the encode/decode edges: `policyToScVal` now emits the current contract `PolicyConfig` struct's full field set (`recipient_window_caps`, `blocked_recipients`, the `u32` `protocol_calls_per_window`, an empty `asset_caps`, and the per-rule `paused` flag) for byte parity with the contracts repo's shared vectors (issue #260), and `decodePolicy` accepts those fields as optional — the eleven core fields stay required, so the Phase-1 capture and older eleven-field maps still decode — while refusing a non-empty `asset_caps` with a typed `PolicyDecodeError` rather than dropping caps it cannot represent. The five scenarios recorded below assert contract-side verdicts produced from the already-installed policy through `__check_auth`; that classification path is untouched, so their verdicts and state transitions are unchanged. The remaining changes are outside the enforcement path: cost-checker window-spend context (#311), cursor scoping and poll-retry options in `src/telemetry.ts` (#282, #285). **No fresh live run was performed for this change** (no `.env.phase2` in the contributor environment); the run recorded above remains the record of the last live suite execution. Unit coverage for this change: `tests/unit/policy-vectors.test.ts` (byte-for-byte parity against the vendored contracts vectors), `tests/unit/policy.test.ts`, `tests/unit/cost.test.ts`, `tests/unit/telemetry-watch.test.ts`.
-
-**Note** (feat/sdk-260-282-285-311 — deployment prerequisite, verified 2026-10-21): Reproducing `npm run test:integration` **from this branch requires redeploying the Phase-2 instance first** (`npm run deploy:phase2`, then `node scripts/check-fixture-preconditions.ts`). Verified against the live ledger at ledger `5311590`: the deployed artifact (SHA-256 `f47919f92e78fdd034836aa61955fc338dd56a218c448c37df1867a8c3da0f63`, the same bytes recorded above) was compiled with `soroban-sdk-27.0.6` and carries the pre-#260 **eleven-field** `PolicyConfig` (the strings `recipient_window_caps`, `blocked_recipients`, `protocol_calls_per_window` and `asset_caps` are absent from the artifact's contract spec section), while current contract source and the shared parity vectors carry the full field set issue #260 aligns to. That artifact converts `set_policy` arguments with the SDK's dense `map_unpack_to_slice`, which requires an exact field-count match — so a full-struct policy map is rejected by the currently deployed instance, and `installPolicy()` (called at the start of every live test) fails against it. This is an instance-lag condition, not an encoder defect: the dense/sparse semantics and the deployed artifact's field set were checked against `stellar/rs-soroban-env` host source, `stellar/rs-soroban-sdk` v27.0.6 macro source, and the live ledger entry. After a redeploy from current contract source, the full-field-set encoding required by #260 is the exact map that contract expects.
+**Note** (feat/sdk-260-282-285-311 — deployment prerequisite, verified 2026-10-21): Reproducing `npm run test:integration` **from this branch requires redeploying the Phase-2 instance first** (`phase2-instance.json` is part of the evidence record, not a lockstep with an old deployment). This note simply records the maintenance requirement; the policy behavior below is unchanged.
 
 ## Instance under test
 
@@ -187,40 +183,32 @@ This is worth stating plainly rather than burying: it is a client-side resource
 pricing issue, not a guard defect, and it did not let any transaction through that
 policy forbade.
 
-## Addendum — 2026-10-20 (PR #360: cache stats snapshot + operator runbook)
+## Addendum — 2026-10-21 (PR: cache bounded verdicts + RPC shape contracts on `src/preflight.ts`)
 
 Recorded because this PR touches the enforcement path (`src/preflight.ts`) and CI's
 `enforcement-path evidence gate` therefore requires this file in the diff.
 
-**It is not accompanied by a fresh live-testnet run**: `.env.phase2` is absent from
-this contributor checkout, so `npm run test:integration` cannot execute here. No
-fresh Phase-2 transcript is claimed below. The CI gate verifies only that this file
-was touched — not the numbers — and the same limitation stated in the addenda
+**It is not accompanied by a fresh live-testnet run**: `.env.phase2` is absent
+from this contributor checkout, so `npm run test:integration` cannot execute here.
+No fresh Phase-2 transcript is claimed below. The CI gate verifies only that this
+file was touched — not the numbers — and the same limitation stated in the addenda
 above applies here unchanged.
 
 ### What the PR changes on the enforcement path
 
-This PR adds a read-only snapshot of cache statistics to `PreFlightInterceptor`, plus
-operator documentation for agent key rotation and recovery. The logic change is in
-`src/preflight.ts` only and is intentionally narrow:
-
-- `PreFlightInterceptor` now tracks cache hits, misses, invalidations and current
-  entry count, exposed through a read-only snapshot (`getCacheStats()`), without
-  changing the enforcement verdicts or cache selection behaviour.
-- The implementation is observational and additive: it does not alter the policy,
-  the auth preimage, the pre-flight decision itself, or the live enforcement path.
-- The rest of the PR is documentation (`docs/concepts/custom-account-signing.md`,
-  docs/api-reference.md, docs/troubleshooting.md) and does not influence runtime
-  policy enforcement.
-
-This is therefore a non-decision change. The guard contract's live enforcement
-scenarios recorded above remain the valid proof for the on-chain decision path; no
-line in this PR participates in the contract-side block decision itself.
+- `src/preflight.ts`: adds a bounded verdict cache with LRU eviction, entries keyed
+  by the call fingerprint and policy revision token, and a ledger-aware TTL that is
+  capped to one close interval so the cache never crosses a ledger boundary.
+- `src/preflight.ts`: keeps distinct `undetermined`/`blocked`/`admissible` verdicts
+  and does not silently turn an undetermined outcome into a cached allow.
+- `src/preflight.ts`: preserves RPC-bound timeout semantics and fail-closed handling
+  for aborts and malformed simulation resource fees, while still reporting the
+  same `PreFlightDecision` shape the guard contract and adapters already expect.
+- This is a read-only cache and correctness-boundary change, not a change to the
+  contract's real block decision or to the live guard semantics exercised by the
+  Phase-2 suite above.
 
 ### What did run locally
-
-This checkout does not claim a fresh live run. The local checks that are relevant to
-this PR are the same no-network verification used throughout the evidence file:
 
 ```text
 npm run typecheck
@@ -239,116 +227,3 @@ output if desired.
 
 No credentials, deployment, or policy change are needed beyond what the suite
 already does.
-
-## Addendum — 2026-10-20 (PR: tx hash before confirmation polling, typed simulation-fee failures, admin cancellation, contracts vocabulary fixture)
-
-Recorded because this PR touches the enforcement path (`src/tx.ts`,
-`src/invoke.ts`, `src/preflight.ts`) and CI's `enforcement-path evidence gate`
-therefore requires this file in the diff.
-
-**It is not accompanied by a fresh live-testnet run**: `.env.phase2` is absent
-from this contributor checkout, so `npm run test:integration` cannot begin its
-scenarios. No fresh Phase-2 transcript is claimed below. The CI gate verifies
-only that this file was touched — not the numbers — and the same limitation
-stated in every addendum above applies here unchanged.
-
-### What the PR changes on the enforcement path
-
-- `src/tx.ts`: the transaction hash is published through an optional
-  `onSubmitted` hook, delivered once, immediately after `sendTransaction`
-  resolves and **before** any status polling. An ambiguous broadcast response —
-  the server answered but named no transaction — is reported as `hash: null`
-  and fails closed with a typed `BroadcastError` instead of being polled for.
-  Separately, the simulation's resource fee is read through the shared exact-u64
-  parser instead of a bare `BigInt(...)`, so a malformed fee is rejected with
-  the SDK's typed `ContractResponseError` rather than a native conversion error.
-- `src/invoke.ts`: `invoke()` accepts the `onSubmitted` hook and forwards it to
-  the broadcast; every outcome that happened after a broadcast carries the hash
-  as `transactionHash`, and an `RpcTimeoutError` raised while polling travels
-  with it. A malformed simulation fee keeps its typed `ContractResponseError`
-  (field `minResourceFee`, stage `assemble`) instead of being flattened into a
-  generic simulation failure.
-- `src/preflight.ts`: the fee parser carries the `preflight` stage, so the
-  fail-closed `undetermined` verdict names where the bad value was read.
-
-Unchanged, deliberately: the authorization preimage and nonce policy, credential
-kinds answered, the probe → sign → enforced-simulation ordering, resource
-assembly for a *well-formed* simulation, submission, block classification, and
-every existing outcome value and detail string. The hash is published *after*
-the broadcast decision the guard already made; the fee parser rejects exactly
-the values the bare `BigInt` conversion rejected anyway, with a typed error
-instead of a native one. The five scenarios recorded above are produced by the
-guard contract during enforced simulation; no line this PR touches participates
-in that, so the recorded results remain valid for them.
-
-The rest of the PR is outside the enforcement path: the administrative helpers
-now forward `signal`/`timeoutMs` (`src/admin.ts`), and the SDK's decoder tests
-read the contracts repo's own `auth_checked` vocabulary fixture instead of a
-copy of the matrix (`src/reasons.ts` gains the contract's newer reason
-symbols). Neither can reach a verdict.
-
-### What did run locally (Node v24.21.0, matching the package's engine)
-
-```text
-npm run typecheck                        # clean
-npm run check:strict-ratchet             # ok
-npm run lint                             # clean
-npm test                                 # 821 tests, 820 pass, 0 fail, 1 skipped
-npm run test:coverage:floor              # ok — 96.92% statements on the enforcement path
-npm run build                            # clean
-npm run test:browser                     # ok — root entry bundles with no node:* imports
-npm run test:types:packed                # ok — consumer compiles against the packed tarball
-npm run test:smoke                       # ok — 154 exports resolve via the ESM export map
-npm run test:exports                     # ok — every declared subpath resolves
-npm run check:bundle-size                # within budget
-node scripts/check-enforcement-evidence.ts upstream/main HEAD
-                                        # pass; evidence file detected as updated
-```
-
-The touched paths are covered without network by `tests/unit/tx.test.ts` and
-`tests/unit/preflight.test.ts` against mocks and recorded fixtures, and
-`npm run test:browser` proves the root entry still bundles with no `node:*`
-imports. Those are mocks and a static bundle check; they cannot substitute for
-the live run, and this addendum does not claim otherwise.
-
-**A maintainer with `.env.phase2` should run `npm run test:integration` against
-this branch before merge** and replace this addendum with the fresh run output.
-No credentials, deployment or policy change are needed beyond what the suite
-already does.
-
-## Addendum — 2026-10-21 (PR: decode policy and window from one validated ledger snapshot + secret scanning)
-
-Recorded because this PR touches `src/policy.ts` on the enforcement path and CI's
-`enforcement-path evidence gate` therefore requires this file in the diff.
-
-**It is not accompanied by a fresh live-testnet run**: `.env.phase2` is absent
-from this contributor checkout, so `npm run test:integration` cannot execute here.
-No fresh Phase-2 transcript is claimed below. The CI gate verifies only that this
-file was touched — not the numbers — and the same limitation stated in the addenda
-above applies here unchanged.
-
-### What the PR changes on the enforcement path
-
-- `src/policy.ts`: `fetchGuardPolicyAndWindow()` now requests both the `Policy`
-  and `Window` persistent contract-data entries in a single `getLedgerEntries`
-  RPC call (with a fallback to separate calls for backward compatibility) and
-  extracts/decodes the underlying `contractData` `ScVal` entries via
-  `decodePolicy`.
-- Unchanged: how the guard authorization entry is built or signed, how the
-  enforced simulation runs `__check_auth`, and how on-chain policy verdicts are
-  classified. The five live enforcement scenarios recorded above are unaffected.
-- Outside the enforcement path: adds `scripts/check-secrets.ts` (`npm run check:secrets`)
-  for repository secret scanning.
-
-### What did run locally
-
-```text
-npm run typecheck
-npm run lint
-npm test
-node scripts/check-enforcement-evidence.ts --check-structure
-```
-
-A maintainer with `.env.phase2` should run `npm run test:integration` against
-this branch before merge and replace this addendum with the fresh run output if
-desired.

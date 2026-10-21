@@ -398,6 +398,26 @@ export interface PreFlightCacheOptions {
    * change invalidate the entry even if the wall-clock TTL has not elapsed.
    */
   policyRevision?: PolicyRevision | (() => PolicyRevision | Promise<PolicyRevision>);
+  /**
+   * Maximum number of verdicts this interceptor holds at once. Omit it for an
+   * unbounded cache (the pre-#333 behaviour); set it to bound a high-volume
+   * agent's memory without disabling caching entirely.
+   *
+   * When the cache is full, storing a new call fingerprint evicts the
+   * **least-recently-used** entry: a cache hit counts as use, as does a fresh
+   * store for a fingerprint already present. Eviction is deterministic (Map
+   * insertion order, refreshed on every hit), so the same sequence of checks
+   * always evicts the same entries.
+   *
+   * Eviction only ever *removes* entries. A lookup still requires the entry to
+   * be present, from the current ledger, and inside its TTL, so evicting can
+   * never resurrect an expired or cross-ledger verdict — the worst it can do is
+   * force a fresh simulation for a fingerprint that was recently cached.
+   *
+   * Must be a positive integer. `invalidate()` clears the entries; the bound
+   * applies again to whatever refills the cache afterwards.
+   */
+  maxEntries?: number;
 }
 
 export interface PreFlightConfig {
@@ -538,7 +558,7 @@ export class PreFlightInterceptor {
 
   private validateCacheOptions(): void {
     if (!this.cacheOptions) return;
-    const { ttlMs, ttlLedgers } = this.cacheOptions;
+    const { ttlMs, ttlLedgers, maxEntries } = this.cacheOptions;
     if (ttlMs === undefined && ttlLedgers === undefined) {
       throw new TypeError("preflight cache requires ttlMs or ttlLedgers");
     }
@@ -548,6 +568,54 @@ export class PreFlightInterceptor {
     if (ttlLedgers !== undefined && (!Number.isFinite(ttlLedgers) || ttlLedgers <= 0)) {
       throw new TypeError("preflight cache ttlLedgers must be a positive finite number");
     }
+    if (maxEntries !== undefined && (!Number.isInteger(maxEntries) || maxEntries <= 0)) {
+      throw new TypeError("preflight cache maxEntries must be a positive integer");
+    }
+  }
+
+  /**
+   * Record a cache hit as the most recent use. Map iteration is insertion
+   * order, so re-inserting is what makes the head of the map the least
+   * recently used entry for `storeCacheEntry` to evict next.
+   *
+   * Only the bounded mode needs this bookkeeping; an unbounded cache never
+   * evicts, so it keeps the cheaper read-only hit path.
+   */
+  private touch(key: string, entry: CacheEntry): void {
+    if (this.cacheOptions?.maxEntries === undefined) return;
+    this.cache.delete(key);
+    this.cache.set(key, entry);
+  }
+
+  /**
+   * Store a verdict, keeping the cache at or below `maxEntries`.
+   *
+   * Expired and cross-ledger entries are already purged by `cacheContext`
+   * before this runs, but eviction is still an unconditional removal: it never
+   * selects an entry to *return*, only one to drop, so a bounded cache cannot
+   * revive a verdict the freshness checks would reject.
+   */
+  private storeCacheEntry(key: string, entry: CacheEntry): void {
+    const maxEntries = this.cacheOptions?.maxEntries;
+    if (maxEntries !== undefined) {
+      // An overwrite is not a new fingerprint: drop the previous occurrence
+      // first so it cannot count against capacity or be evicted as "old".
+      this.cache.delete(key);
+      let evicted = 0;
+      while (this.cache.size >= maxEntries) {
+        const oldest = this.cache.keys().next();
+        if (oldest.done) break;
+        this.cache.delete(oldest.value);
+        evicted += 1;
+      }
+      if (evicted > 0) {
+        this.logger.debug("pre-flight cache evicted least-recently-used verdicts", {
+          evicted,
+          maxEntries,
+        });
+      }
+    }
+    this.cache.set(key, entry);
   }
 
   private cacheTtlMs(): number {
@@ -644,6 +712,7 @@ export class PreFlightInterceptor {
       if (cached) {
         const now = this.clock.now();
         if (cached.ledger === context.ledger && cached.expiresAt > now) {
+          this.touch(context.key, cached);
           // A hit is worth a line of its own: it is the one verdict the caller
           // gets without a simulation, so a host reading logs needs to be able
           // to tell a reused verdict from a fresh one.
@@ -812,7 +881,7 @@ export class PreFlightInterceptor {
     // An undetermined result is not a verdict and may be transient, so it is
     // deliberately not cached. Actual admissible/blocked results are.
     if (context && decision.kind !== "undetermined") {
-      this.cache.set(context.key, {
+      this.storeCacheEntry(context.key, {
         decision,
         ledger: context.ledger,
         expiresAt: context.expiresAt,

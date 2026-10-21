@@ -37,6 +37,13 @@
  * Env overrides: `PHASE2_RPC_URL`, `PHASE2_GUARD`, `PHASE2_TOKEN`.
  * Refresh cadence and the test tier this feeds are documented in
  * `tests/fixtures/rpc/README.md` and `CONTRIBUTING.md`.
+ *
+ * ## After a recapture
+ *
+ * A capture that adds, removes, or renames a top-level response field fails the
+ * shape contract in `tests/unit/rpc-fixtures.test.ts`. Treat that failure as
+ * the point of the check: update `FIXTURE_SHAPES` there and the fixture README
+ * deliberately, so the change is reviewed rather than absorbed silently.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";

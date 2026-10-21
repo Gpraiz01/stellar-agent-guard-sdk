@@ -380,6 +380,7 @@ const interceptor = new PreFlightInterceptor({
   source,
   cache: {
     ttlLedgers: 1, // maximum one approximate five-second ledger window
+    maxEntries: 256, // bound distinct call fingerprints held at once
     policyRevision: () => readPolicyRevision(),
   },
 });
@@ -398,6 +399,14 @@ is discarded when the observed ledger advances, when the TTL expires, or when
 `invalidate()` is called. `ttlMs` and `ttlLedgers` are both capped at one
 approximate ledger-close interval; if both are supplied, `ttlMs` takes
 precedence.
+
+`maxEntries` bounds the cache's cardinality. When it is full, storing a new
+call fingerprint evicts the **least-recently-used** entry (a cache hit refreshes
+recency), so an agent making many distinct calls cannot grow the cache without
+limit. Eviction only removes entries; a lookup still requires a current-ledger,
+unexpired entry, so a bounded cache can never serve an expired or cross-ledger
+verdict — the worst it does is force a fresh simulation for a recently cached
+fingerprint. Omit `maxEntries` for the previous unbounded behaviour.
 
 A **cached verdict can be staler than one admitted transfer**. The rolling spend
 window can change after a simulation while a cached result is still being

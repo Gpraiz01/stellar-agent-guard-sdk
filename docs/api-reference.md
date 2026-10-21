@@ -7,7 +7,7 @@ The Stellar Agent Guard SDK exposes the following public surface. For the narrat
 ### Interception & Execution
 
 - `PreFlightInterceptor`
-  - `constructor(options: PreFlightInterceptorOptions)` — Pass `cache: { ttlMs }` or `cache: { ttlLedgers }` to opt into the short-lived cache; omit it for fresh simulations.
+  - `constructor(options: PreFlightInterceptorOptions)` — Pass `cache: { ttlMs }` or `cache: { ttlLedgers }` to opt into the short-lived cache; omit it for fresh simulations. Add `maxEntries` to bound the cache's cardinality with least-recently-used eviction.
   - `check(call: ContractCall): Promise<PreFlightDecision>` — Returns `admissible | blocked | undetermined` without throwing or broadcasting.
   - `checkBatch(calls: ContractCall[], options?: CheckBatchOptions): Promise<PreFlightBatchDecision>` — Stages SAC transfer amounts against the committed window, with an `undetermined` batch verdict when a required policy/window read fails. An explicit `initialWindowSpent: 0n` is a trusted snapshot; a failed read is not treated as zero. `staging.source` reports `provided | ledger | absent | unavailable`.
   - `assertBatchAllowed(calls, options?): Promise<PreFlightBatchDecision>` — Throws `GuardBlockedError` for a blocked member or `PreFlightUndeterminedError` for an undetermined member or unavailable staging state.

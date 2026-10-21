@@ -22,6 +22,7 @@ import { GuardBlockedError } from "../../src/reasons.ts";
 import type { PolicyConfig } from "../../src/policy.ts";
 import type { ContractCall } from "../../src/tx.ts";
 import { unsafeContractAddress, unsafeAccountAddress } from "../../src/policy.ts";
+import { type Clock, FakeClock } from "../../src/clock.ts";
 import { mulberry32, randomUint } from "./seeded-random.ts";
 
 const VALID_GUARD = unsafeContractAddress(
@@ -833,7 +834,7 @@ function makeHarness() {
 
 function makeInterceptor(
   harness: ReturnType<typeof makeHarness>,
-  options: { cache?: PreFlightCacheOptions } = {},
+  options: { cache?: PreFlightCacheOptions; clock?: Clock } = {},
 ): PreFlightInterceptor {
   return new PreFlightInterceptor({
     server: harness.server,
@@ -842,7 +843,17 @@ function makeInterceptor(
     agent: harness.source,
     source: harness.source,
     ...(options.cache ? { cache: options.cache } : {}),
+    ...(options.clock ? { clock: options.clock } : {}),
   });
+}
+
+/** A distinct call fingerprint per amount, for exercising cache cardinality. */
+function callWithAmount(amount: bigint): ContractCall {
+  return {
+    contract: CONTRACT,
+    fn: "noop",
+    args: [nativeToScVal(amount, { type: "i128" })],
+  };
 }
 
 describe("PreFlightInterceptor simulation cache", () => {
@@ -1045,6 +1056,110 @@ describe("PreFlightInterceptor simulation cache", () => {
       () => makeInterceptor(harness, { cache: { ttlMs: 0 } }),
       /ttlMs must be a positive finite number/,
     );
+  });
+
+  it("evicts the least-recently-used verdict when maxEntries is reached", async () => {
+    const harness = makeHarness();
+    const interceptor = makeInterceptor(harness, { cache: { ttlMs: 5_000, maxEntries: 2 } });
+    const first = callWithAmount(1n);
+    const second = callWithAmount(2n);
+    const third = callWithAmount(3n);
+
+    await interceptor.check(first); // cache: [first]
+    await interceptor.check(second); // cache: [first, second]
+    await interceptor.check(first); // hit, recency: [second, first]
+    await interceptor.check(third); // miss, evicts second: [first, third]
+    assert.equal(harness.simulations, 6);
+
+    await interceptor.check(first); // still cached
+    assert.equal(harness.simulations, 6);
+    await interceptor.check(second); // was evicted, so it is re-simulated
+    assert.equal(harness.simulations, 8);
+  });
+
+  it("bounds the cache size under many unique calls", async () => {
+    const harness = makeHarness();
+    const maxEntries = 8;
+    const interceptor = makeInterceptor(harness, { cache: { ttlMs: 5_000, maxEntries } });
+    const calls = Array.from({ length: 100 }, (_, index) => callWithAmount(BigInt(index + 1)));
+
+    for (const call of calls) await interceptor.check(call);
+    assert.equal(harness.simulations, 200);
+
+    // The bound holds after far more unique fingerprints than it can store.
+    const cacheSize = (interceptor as unknown as { cache: Map<string, unknown> }).cache.size;
+    assert.equal(cacheSize, maxEntries);
+
+    // The newest `maxEntries` verdicts survive; the oldest are gone.
+    await interceptor.check(calls[calls.length - 1]!);
+    assert.equal(harness.simulations, 200);
+    await interceptor.check(calls[calls.length - 1 - maxEntries]!);
+    assert.equal(harness.simulations, 202);
+  });
+
+  it("keeps explicit invalidation complete while bounded", async () => {
+    const harness = makeHarness();
+    const interceptor = makeInterceptor(harness, { cache: { ttlMs: 5_000, maxEntries: 2 } });
+    const first = callWithAmount(1n);
+    const second = callWithAmount(2n);
+
+    await interceptor.check(first);
+    await interceptor.check(second);
+    interceptor.invalidate();
+    await interceptor.check(first);
+    await interceptor.check(second);
+
+    assert.equal(harness.simulations, 8);
+  });
+
+  it("keeps per-call invalidation precise while bounded", async () => {
+    const harness = makeHarness();
+    const interceptor = makeInterceptor(harness, { cache: { ttlMs: 5_000, maxEntries: 2 } });
+    const first = callWithAmount(1n);
+    const second = callWithAmount(2n);
+
+    await interceptor.check(first);
+    await interceptor.check(second);
+    interceptor.invalidate(first);
+    await interceptor.check(first); // re-simulated
+    await interceptor.check(second); // still cached
+
+    assert.equal(harness.simulations, 6);
+  });
+
+  it("never serves an expired or cross-ledger verdict under eviction pressure", async () => {
+    const harness = makeHarness();
+    const clock = new FakeClock(1_000);
+    const interceptor = makeInterceptor(harness, {
+      cache: { ttlMs: 1, maxEntries: 2 },
+      clock,
+    });
+    const first = callWithAmount(1n);
+    const second = callWithAmount(2n);
+
+    await interceptor.check(first);
+    await interceptor.check(second);
+
+    // The TTL lapses while both fingerprints are still within the bound.
+    clock.advance(2);
+    await interceptor.check(first); // expired: must re-simulate, never reuse
+    assert.equal(harness.simulations, 6);
+
+    // A ledger advance discards the refreshed verdict even though the bound
+    // has room to keep it.
+    harness.advanceLedger();
+    await interceptor.check(first);
+    assert.equal(harness.simulations, 8);
+  });
+
+  it("rejects an invalid maxEntries", () => {
+    const harness = makeHarness();
+    for (const maxEntries of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.throws(
+        () => makeInterceptor(harness, { cache: { ttlMs: 5_000, maxEntries } }),
+        /maxEntries must be a positive integer/,
+      );
+    }
   });
 });
 
